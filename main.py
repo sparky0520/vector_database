@@ -1,59 +1,129 @@
-import json
+import gc
+import time
 import numpy as np
 
+from VectorDB import VectorDB
+from MatrixVectorDB import MatrixVectorDB
 
-class VectorDB:
-    def __init__(self):
-        self.vectors = {}  # id -> vector
-        self.metadata = {}  # id => metadata
+DIMENSION = 384
 
-    def add(self, vector_id: str, vector, metadata=None):
-        vector = np.asarray(vector, dtype=np.float32)
-        if vector.ndim != 1:
-            raise ValueError("Vector must be 1-dimensional")
+# ---------------------------
+# Benchmark
+# ---------------------------
 
-        self.vectors[vector_id] = vector
-        self.metadata[vector_id] = metadata or {}
 
-    def cosine_similarity(self, a, b):
-        norm_a = np.linalg.norm(a)
-        norm_b = np.linalg.norm(b)
+def generate_vectors(count):
+    return np.random.rand(count, DIMENSION).astype(np.float32)
 
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
 
-        return float(np.dot(a, b)) / (norm_a * norm_b)
+def benchmark(size):
+    print("=" * 60)
+    print(f"Testing {size:,} vectors")
+    print("=" * 60)
 
-    def search(self, query_vector, top_k=5):
-        query_vector = np.asarray(query_vector, dtype=np.float32)
+    db = VectorDB()
 
-        results = []
+    print("Generating vectors...")
+    vectors = generate_vectors(size)
 
-        for vector_id, vector in self.vectors.items():
-            score = self.cosine_similarity(query_vector, vector)
+    print("Loading into database...")
 
-            results.append(
-                {"id": vector_id, "score": score, "metadata": self.metadata[vector_id]}
-            )
+    start_load = time.perf_counter()
 
-        results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:top_k]
+    for i, vec in enumerate(vectors):
+        db.add(f"vec_{i}", vec)
 
-    def save(self, path):
-        data = {
-            "vectors": {k: v.tolist() for k, v in self.vectors.items()},
-            "metadata": self.metadata,
-        }
+    load_time = time.perf_counter() - start_load
 
-        with open(path, "w") as f:
-            json.dump(data, f)
+    print(f"Load Time: {load_time:.2f}s")
 
-    def load(self, path):
-        with open(path, "r") as f:
-            data = json.load(f)
+    query = np.random.rand(DIMENSION).astype(np.float32)
 
-        self.vectors = {
-            k: np.array(v, dtype=np.float32) for k, v in data["vectors"].items()
-        }
+    print("Running search...")
 
-        self.metadata = data["metadata"]
+    start_search = time.perf_counter()
+
+    results = db.search(query, top_k=10)
+
+    search_time = time.perf_counter() - start_search
+
+    print(f"Search Time: {search_time:.4f}s")
+    print()
+
+    print("Top Result:")
+    print(results[0])
+
+    del db
+    del vectors
+    gc.collect()
+
+    return search_time
+
+
+# --------------------------
+# Matrix Benchmark
+# --------------------------
+
+
+def matrix_benchmark(size):
+
+    print()
+    print("=" * 60)
+    print(f"{size:,} vectors")
+    print("=" * 60)
+
+    vectors = np.random.rand(size, DIMENSION).astype(np.float32)
+
+    db = MatrixVectorDB(DIMENSION)
+
+    start = time.perf_counter()
+
+    db.add_bulk(vectors)
+
+    build_time = time.perf_counter() - start
+
+    query = np.random.rand(DIMENSION).astype(np.float32)
+
+    start = time.perf_counter()
+
+    result = db.search(query, top_k=10)
+
+    search_time = time.perf_counter() - start
+
+    print(f"Build Time : {build_time:.3f}s")
+
+    print(f"Search Time: {search_time:.6f}s")
+
+    print(f"Top Score  : {result[0][1]:.4f}")
+
+    return search_time
+
+
+if __name__ == "__main__":
+    sizes = [
+        1_000,
+        10_000,
+        100_000,
+        500_000,
+        1_000_000,
+    ]
+
+    summary = []
+
+    for size in sizes:
+        try:
+            # t = benchmark(size)
+            t = matrix_benchmark(size)
+            summary.append((size, t))
+
+        except MemoryError:
+            print(f"MemoryError at {size:,} vectors")
+            break
+
+    print("\n")
+    print("=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+
+    for size, t in summary:
+        print(f"{size:>10,} vectors -> {t:.4f}s")
